@@ -27,7 +27,11 @@ async function sbFetch(path: string, options: RequestInit = {}) {
       ...(options.headers || {}),
     },
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    const t = await res.text()
+    console.error('sbFetch error:', path, t)
+    return null
+  }
   const text = await res.text()
   return text ? JSON.parse(text) : null
 }
@@ -87,22 +91,15 @@ export default function AdminPage() {
       return
     }
     setIsDemo(false)
-
     try {
       const [ords, prods, settArr] = await Promise.all([
         sbFetch('orders?select=*&order=created_at.desc'),
         sbFetch('products?select=*&order=created_at.asc'),
         sbFetch('settings?select=*'),
       ])
-
-      if (ords && ords.length > 0) setOrders(ords)
-      else setOrders([])
-
+      if (ords !== null) setOrders(ords.length > 0 ? ords : [])
       if (prods && prods.length > 0) setProducts(prods)
-
-      if (settArr && settArr.length > 0) {
-        setSettings(settArr[0])
-      }
+      if (settArr && settArr.length > 0) setSettings(settArr[0])
     } catch (e) {
       console.error('Load error:', e)
     }
@@ -123,12 +120,54 @@ export default function AdminPage() {
     return () => clearInterval(interval)
   }, [authed, loadData])
 
-  const updateOrderStatus = async (orderId: string, status: OrderStatus) => {
-    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o))
+  const updateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
+    const order = orders.find(o => o.id === orderId)
+    if (!order) return
+    const previousStatus = order.status
+
+    // Update order status in UI immediately
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o))
+
+    // Update order status in DB
     await sbFetch(`orders?id=eq.${orderId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status: newStatus }),
     })
+
+    // Handle cups_sold adjustment for cancellations
+    const isCancelling = newStatus === 'cancelled' && previousStatus !== 'cancelled'
+    const isUncancelling = previousStatus === 'cancelled' && newStatus !== 'cancelled'
+
+    if (isCancelling || isUncancelling) {
+      const orderQty = order.items.reduce((s, i) => s + i.quantity, 0)
+
+      // Always fetch fresh settings from DB to get accurate cups_sold and id
+      const freshSettings = await sbFetch('settings?select=*')
+      if (!freshSettings || freshSettings.length === 0) return
+
+      const currentSold = freshSettings[0].cups_sold
+      const settingsId = freshSettings[0].id
+
+      const newSold = isCancelling
+        ? Math.max(0, currentSold - orderQty)
+        : currentSold + orderQty
+
+      console.log(`Updating cups_sold: ${currentSold} → ${newSold} (settings id: ${settingsId})`)
+
+      // Update settings in DB
+      const result = await sbFetch(`settings?id=eq.${settingsId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ cups_sold: newSold }),
+      })
+
+      console.log('Settings update result:', result)
+
+      // Update local state
+      setSettings(prev => ({ ...prev, cups_sold: newSold, id: settingsId }))
+    }
+
+    // Reload everything after 1 second to confirm
+    setTimeout(loadData, 1000)
   }
 
   const toggleProductAvailability = async (productId: string, available: boolean) => {
@@ -143,8 +182,10 @@ export default function AdminPage() {
     const limit = parseInt(newLimit)
     if (isNaN(limit) || limit < 1) return
     setSaving(true)
+    const freshSettings = await sbFetch('settings?select=*')
+    const settingsId = freshSettings?.[0]?.id || settings.id
     setSettings(prev => ({ ...prev, daily_limit: limit }))
-    await sbFetch(`settings?id=eq.${settings.id}`, {
+    await sbFetch(`settings?id=eq.${settingsId}`, {
       method: 'PATCH',
       body: JSON.stringify({ daily_limit: limit }),
     })
@@ -154,8 +195,10 @@ export default function AdminPage() {
   }
 
   const resetCupsSold = async () => {
+    const freshSettings = await sbFetch('settings?select=*')
+    const settingsId = freshSettings?.[0]?.id || settings.id
     setSettings(prev => ({ ...prev, cups_sold: 0 }))
-    await sbFetch(`settings?id=eq.${settings.id}`, {
+    await sbFetch(`settings?id=eq.${settingsId}`, {
       method: 'PATCH',
       body: JSON.stringify({ cups_sold: 0 }),
     })
@@ -163,7 +206,7 @@ export default function AdminPage() {
   }
 
   const todayOrders = orders.filter(o => new Date(o.created_at).toDateString() === new Date().toDateString())
-  const revenue = todayOrders.filter(o => o.payment_status === 'paid').reduce((s, o) => s + o.total, 0)
+  const revenue = todayOrders.filter(o => o.payment_status === 'paid' && o.status !== 'cancelled').reduce((s, o) => s + o.total, 0)
 
   const inputStyle: React.CSSProperties = {
     padding: '0.6rem 0.875rem',
@@ -215,7 +258,6 @@ export default function AdminPage() {
   return (
     <main style={{ background: 'var(--cream)', minHeight: '100vh' }}>
       <Nav />
-
       <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '100px 2rem 80px' }}>
 
         {isDemo && (
@@ -254,7 +296,7 @@ export default function AdminPage() {
           <div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
               {[
-                { label: 'Orders Today', value: todayOrders.length.toString() },
+                { label: 'Orders Today', value: todayOrders.filter(o => o.status !== 'cancelled').length.toString() },
                 { label: 'Cups Sold', value: settings.cups_sold.toString(), unit: `/ ${settings.daily_limit}` },
                 { label: 'Cups Remaining', value: Math.max(0, settings.daily_limit - settings.cups_sold).toString() },
                 { label: 'Revenue Today', value: revenue.toString(), unit: 'AED' },
@@ -378,7 +420,7 @@ function OrderTable({ orders, onStatusChange }: { orders: Order[]; onStatusChang
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
       {orders.map(order => (
-        <div key={order.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '16px', padding: '1.5rem' }}>
+        <div key={order.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '16px', padding: '1.5rem', opacity: order.status === 'cancelled' ? 0.6 : 1 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
             <div>
               <span style={{ fontSize: '0.7rem', letterSpacing: '0.15em', color: 'var(--wine)', textTransform: 'uppercase' }}>{order.order_number}</span>
