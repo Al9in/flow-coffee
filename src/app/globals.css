@@ -1,8 +1,8 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,200;0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=DM+Sans:ital,opsz,wght@0,9..40,200;0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap');
 
 :root {
   --wine: #5C1A2E;
@@ -41,40 +41,21 @@ body {
   font-family: var(--font-display);
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 4px;
-}
-::-webkit-scrollbar-track {
-  background: var(--cream);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 2px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: var(--cream); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-/* Selection */
-::selection {
-  background: var(--wine);
-  color: white;
-}
+::selection { background: var(--wine); color: white; }
 
-/* Smooth transitions for links */
-a {
-  transition: color 0.2s ease;
-}
+a { transition: color 0.2s ease; }
 
-/* Input focus styles */
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--wine) !important;
   box-shadow: 0 0 0 3px rgba(92, 26, 46, 0.08);
 }
 
-/* Noise texture overlay */
 .noise-bg::after {
   content: '';
   position: fixed;
@@ -85,7 +66,6 @@ input:focus, select:focus, textarea:focus {
   opacity: 0.4;
 }
 
-/* Stagger animation utilities */
 .stagger-1 { animation-delay: 0.1s; opacity: 0; }
 .stagger-2 { animation-delay: 0.2s; opacity: 0; }
 .stagger-3 { animation-delay: 0.3s; opacity: 0; }
@@ -93,7 +73,6 @@ input:focus, select:focus, textarea:focus {
 .stagger-5 { animation-delay: 0.5s; opacity: 0; }
 .stagger-6 { animation-delay: 0.6s; opacity: 0; }
 
-/* Status badge */
 .status-placed { color: #92400e; background: #fef3c7; }
 .status-confirmed { color: #1e40af; background: #dbeafe; }
 .status-brewing { color: #7c3aed; background: #ede9fe; }
