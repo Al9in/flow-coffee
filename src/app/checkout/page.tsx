@@ -257,7 +257,7 @@ export default function CheckoutPage() {
                 <div style={{ display: 'grid', gap: '1rem' }}>
                   <div>
                     <label style={labelStyle}>Card Number</label>
-                    <input type="text" placeholder="4242 4242 4242 4242" style={inputStyle} disabled style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} />
+                    <input type="text" placeholder="4242 4242 4242 4242" style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} disabled />
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                     <div>
