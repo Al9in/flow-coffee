@@ -1,13 +1,36 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { supabase, Order, Product, Settings, OrderStatus } from '@/lib/supabase'
+import { useEffect, useState, useCallback } from 'react'
+import { Order, Product, Settings, OrderStatus } from '@/lib/supabase'
 import Nav from '@/components/Nav'
-import { Plus, Edit2, Trash2, Check, X, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 
 const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || 'flow2024'
-
 const STATUS_OPTIONS: OrderStatus[] = ['placed', 'confirmed', 'brewing', 'ready', 'delivered', 'cancelled']
+
+function getSupabase() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+  return { url, key }
+}
+
+async function sbFetch(path: string, options: RequestInit = {}) {
+  const { url, key } = getSupabase()
+  if (!url || url.includes('placeholder')) return null
+  const res = await fetch(`${url}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': key,
+      'Authorization': `Bearer ${key}`,
+      'Prefer': 'return=representation',
+      ...(options.headers || {}),
+    },
+  })
+  if (!res.ok) return null
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
+}
 
 const demoOrders: Order[] = [
   {
@@ -51,11 +74,39 @@ export default function AdminPage() {
   const [passwordError, setPasswordError] = useState(false)
   const [orders, setOrders] = useState<Order[]>(demoOrders)
   const [products, setProducts] = useState<Product[]>(demoProducts)
-  const [settings, setSettings] = useState<Settings>({ id: '1', daily_limit: 40, cups_sold: 12, updated_at: new Date().toISOString() })
+  const [settings, setSettings] = useState<Settings>({ id: '', daily_limit: 40, cups_sold: 0, updated_at: new Date().toISOString() })
   const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'products' | 'settings'>('overview')
-  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
   const [newLimit, setNewLimit] = useState('')
   const [saving, setSaving] = useState(false)
+  const [isDemo, setIsDemo] = useState(true)
+
+  const loadData = useCallback(async () => {
+    const { url } = getSupabase()
+    if (!url || url.includes('placeholder')) {
+      setIsDemo(true)
+      return
+    }
+    setIsDemo(false)
+
+    try {
+      const [ords, prods, settArr] = await Promise.all([
+        sbFetch('orders?select=*&order=created_at.desc'),
+        sbFetch('products?select=*&order=created_at.asc'),
+        sbFetch('settings?select=*'),
+      ])
+
+      if (ords && ords.length > 0) setOrders(ords)
+      else setOrders([])
+
+      if (prods && prods.length > 0) setProducts(prods)
+
+      if (settArr && settArr.length > 0) {
+        setSettings(settArr[0])
+      }
+    } catch (e) {
+      console.error('Load error:', e)
+    }
+  }, [])
 
   const handleLogin = () => {
     if (password === ADMIN_PASSWORD) {
@@ -66,40 +117,26 @@ export default function AdminPage() {
     }
   }
 
-  const loadData = async () => {
-    try {
-      const [{ data: ords }, { data: prods }, { data: sett }] = await Promise.all([
-        supabase.from('orders').select('*').order('created_at', { ascending: false }),
-        supabase.from('products').select('*').order('created_at'),
-        supabase.from('settings').select('*').single(),
-      ])
-      if (ords && ords.length > 0) setOrders(ords)
-      if (prods && prods.length > 0) setProducts(prods)
-      if (sett) setSettings(sett)
-    } catch {}
-  }
-
   useEffect(() => {
     if (!authed) return
-    const channel = supabase
-      .channel('admin-orders')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => loadData())
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [authed])
+    const interval = setInterval(loadData, 10000)
+    return () => clearInterval(interval)
+  }, [authed, loadData])
 
   const updateOrderStatus = async (orderId: string, status: OrderStatus) => {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o))
-    try {
-      await supabase.from('orders').update({ status }).eq('id', orderId)
-    } catch {}
+    await sbFetch(`orders?id=eq.${orderId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    })
   }
 
   const toggleProductAvailability = async (productId: string, available: boolean) => {
     setProducts(prev => prev.map(p => p.id === productId ? { ...p, available_today: available } : p))
-    try {
-      await supabase.from('products').update({ available_today: available }).eq('id', productId)
-    } catch {}
+    await sbFetch(`products?id=eq.${productId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ available_today: available }),
+    })
   }
 
   const updateDailyLimit = async () => {
@@ -107,24 +144,35 @@ export default function AdminPage() {
     if (isNaN(limit) || limit < 1) return
     setSaving(true)
     setSettings(prev => ({ ...prev, daily_limit: limit }))
-    try {
-      await supabase.from('settings').update({ daily_limit: limit }).eq('id', settings.id)
-    } catch {}
+    await sbFetch(`settings?id=eq.${settings.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ daily_limit: limit }),
+    })
     setSaving(false)
     setNewLimit('')
+    await loadData()
+  }
+
+  const resetCupsSold = async () => {
+    setSettings(prev => ({ ...prev, cups_sold: 0 }))
+    await sbFetch(`settings?id=eq.${settings.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ cups_sold: 0 }),
+    })
+    await loadData()
   }
 
   const todayOrders = orders.filter(o => new Date(o.created_at).toDateString() === new Date().toDateString())
   const revenue = todayOrders.filter(o => o.payment_status === 'paid').reduce((s, o) => s + o.total, 0)
 
-  const inputStyle = {
+  const inputStyle: React.CSSProperties = {
     padding: '0.6rem 0.875rem',
     border: '1px solid var(--border)',
     borderRadius: '10px',
     background: 'white',
     fontSize: '0.85rem',
     color: 'var(--text-primary)',
-    fontFamily: 'var(--font-body)',
+    fontFamily: 'inherit',
   }
 
   if (!authed) {
@@ -135,7 +183,6 @@ export default function AdminPage() {
             <span className="font-display" style={{ fontSize: '1.75rem', color: 'var(--wine)', letterSpacing: '0.1em' }}>FLOW</span>
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', letterSpacing: '0.15em', textTransform: 'uppercase', marginTop: '0.25rem' }}>Admin</p>
           </div>
-
           <div style={{ marginBottom: '1rem' }}>
             <input
               type="password"
@@ -143,30 +190,13 @@ export default function AdminPage() {
               value={password}
               onChange={e => { setPassword(e.target.value); setPasswordError(false) }}
               onKeyDown={e => e.key === 'Enter' && handleLogin()}
-              style={{
-                ...inputStyle,
-                width: '100%',
-                borderColor: passwordError ? '#dc2626' : 'var(--border)',
-              }}
+              style={{ ...inputStyle, width: '100%', borderColor: passwordError ? '#dc2626' : 'var(--border)' }}
             />
             {passwordError && <p style={{ fontSize: '0.75rem', color: '#dc2626', marginTop: '0.4rem' }}>Incorrect password</p>}
           </div>
-
           <button
             onClick={handleLogin}
-            style={{
-              width: '100%',
-              padding: '0.875rem',
-              background: 'var(--wine)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '12px',
-              fontSize: '0.8rem',
-              letterSpacing: '0.1em',
-              textTransform: 'uppercase',
-              cursor: 'pointer',
-              fontFamily: 'var(--font-body)',
-            }}
+            style={{ width: '100%', padding: '0.875rem', background: 'var(--wine)', color: 'white', border: 'none', borderRadius: '12px', fontSize: '0.8rem', letterSpacing: '0.1em', textTransform: 'uppercase', cursor: 'pointer', fontFamily: 'inherit' }}
           >
             Enter
           </button>
@@ -187,159 +217,117 @@ export default function AdminPage() {
       <Nav />
 
       <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '100px 2rem 80px' }}>
+
+        {isDemo && (
+          <div style={{ background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '12px', padding: '0.875rem 1.25rem', marginBottom: '1.5rem', fontSize: '0.82rem', color: '#92400e' }}>
+            Demo mode — Supabase not connected. Add environment variables to see real data.
+          </div>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2.5rem', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <p style={{ fontSize: '0.65rem', letterSpacing: '0.25em', textTransform: 'uppercase', color: 'var(--wine)', marginBottom: '0.4rem' }}>
-              Admin Dashboard
-            </p>
-            <h1 className="font-display" style={{ fontSize: 'clamp(1.5rem, 4vw, 2.5rem)', fontWeight: 300 }}>
-              FLOW Control
-            </h1>
+            <p style={{ fontSize: '0.65rem', letterSpacing: '0.25em', textTransform: 'uppercase', color: 'var(--wine)', marginBottom: '0.4rem' }}>Admin Dashboard</p>
+            <h1 className="font-display" style={{ fontSize: 'clamp(1.5rem, 4vw, 2.5rem)', fontWeight: 300 }}>FLOW Control</h1>
           </div>
           <button
             onClick={loadData}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-              padding: '0.6rem 1.25rem',
-              border: '1px solid var(--border)',
-              borderRadius: '100px',
-              background: 'white',
-              cursor: 'pointer',
-              fontSize: '0.75rem',
-              color: 'var(--text-secondary)',
-              fontFamily: 'var(--font-body)',
-            }}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem', border: '1px solid var(--border)', borderRadius: '100px', background: 'white', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'inherit' }}
           >
             <RefreshCw size={13} />
             Refresh
           </button>
         </div>
 
-        {/* Tabs */}
         <div style={{ display: 'flex', gap: '0.25rem', background: 'white', border: '1px solid var(--border)', borderRadius: '14px', padding: '0.35rem', marginBottom: '2rem', overflowX: 'auto' }}>
           {tabs.map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              style={{
-                padding: '0.6rem 1.25rem',
-                borderRadius: '10px',
-                border: 'none',
-                background: activeTab === tab.id ? 'var(--wine)' : 'transparent',
-                color: activeTab === tab.id ? 'white' : 'var(--text-secondary)',
-                fontSize: '0.8rem',
-                cursor: 'pointer',
-                fontFamily: 'var(--font-body)',
-                fontWeight: activeTab === tab.id ? 400 : 300,
-                letterSpacing: '0.04em',
-                whiteSpace: 'nowrap',
-                transition: 'all 0.2s ease',
-              }}
+              style={{ padding: '0.6rem 1.25rem', borderRadius: '10px', border: 'none', background: activeTab === tab.id ? 'var(--wine)' : 'transparent', color: activeTab === tab.id ? 'white' : 'var(--text-secondary)', fontSize: '0.8rem', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', transition: 'all 0.2s ease' }}
             >
               {tab.label}
             </button>
           ))}
         </div>
 
-        {/* Overview */}
         {activeTab === 'overview' && (
           <div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
               {[
-                { label: 'Orders Today', value: todayOrders.length.toString(), unit: '' },
+                { label: 'Orders Today', value: todayOrders.length.toString() },
                 { label: 'Cups Sold', value: settings.cups_sold.toString(), unit: `/ ${settings.daily_limit}` },
-                { label: 'Cups Remaining', value: Math.max(0, settings.daily_limit - settings.cups_sold).toString(), unit: '' },
+                { label: 'Cups Remaining', value: Math.max(0, settings.daily_limit - settings.cups_sold).toString() },
                 { label: 'Revenue Today', value: revenue.toString(), unit: 'AED' },
               ].map(stat => (
                 <div key={stat.label} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '18px', padding: '1.75rem' }}>
-                  <p style={{ fontSize: '0.65rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-                    {stat.label}
-                  </p>
+                  <p style={{ fontSize: '0.65rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>{stat.label}</p>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.4rem' }}>
-                    <span className="font-display" style={{ fontSize: '2.5rem', fontWeight: 500, color: 'var(--wine)', lineHeight: 1 }}>
-                      {stat.value}
-                    </span>
+                    <span className="font-display" style={{ fontSize: '2.5rem', fontWeight: 500, color: 'var(--wine)', lineHeight: 1 }}>{stat.value}</span>
                     {stat.unit && <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{stat.unit}</span>}
                   </div>
                 </div>
               ))}
             </div>
-
-            {/* Recent orders preview */}
-            <h2 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-              Recent Orders
-            </h2>
+            <h2 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1rem' }}>Recent Orders</h2>
             <OrderTable orders={todayOrders.slice(0, 5)} onStatusChange={updateOrderStatus} />
           </div>
         )}
 
-        {/* Orders */}
         {activeTab === 'orders' && (
           <div>
-            <h2 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-              All Orders Today
-            </h2>
+            <h2 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1rem' }}>All Orders Today</h2>
             <OrderTable orders={todayOrders} onStatusChange={updateOrderStatus} />
           </div>
         )}
 
-        {/* Products */}
         {activeTab === 'products' && (
-          <div>
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              {products.map(product => (
-                <div key={product.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '18px', padding: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-                  <div>
-                    <p style={{ fontSize: '0.65rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--wine)', marginBottom: '0.25rem' }}>
-                      {product.process} · {product.origin}
-                    </p>
-                    <h3 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 400, marginBottom: '0.4rem' }}>{product.name}</h3>
-                    <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                      {product.notes.map(n => (
-                        <span key={n} style={{ fontSize: '0.68rem', padding: '0.2rem 0.6rem', background: 'var(--parchment)', borderRadius: '100px', color: 'var(--text-secondary)' }}>{n}</span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <span className="font-display" style={{ fontSize: '1.2rem', fontWeight: 500 }}>{product.price} AED</span>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={product.available_today}
-                        onChange={e => toggleProductAvailability(product.id, e.target.checked)}
-                        style={{ accentColor: 'var(--wine)', width: '16px', height: '16px' }}
-                      />
-                      <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Available today</span>
-                    </label>
+          <div style={{ display: 'grid', gap: '1rem' }}>
+            {products.map(product => (
+              <div key={product.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '18px', padding: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                  <p style={{ fontSize: '0.65rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--wine)', marginBottom: '0.25rem' }}>{product.process} · {product.origin}</p>
+                  <h3 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 400, marginBottom: '0.4rem' }}>{product.name}</h3>
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    {product.notes.map(n => (
+                      <span key={n} style={{ fontSize: '0.68rem', padding: '0.2rem 0.6rem', background: 'var(--parchment)', borderRadius: '100px', color: 'var(--text-secondary)' }}>{n}</span>
+                    ))}
                   </div>
                 </div>
-              ))}
-            </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <span className="font-display" style={{ fontSize: '1.2rem', fontWeight: 500 }}>{product.price} AED</span>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={product.available_today}
+                      onChange={e => toggleProductAvailability(product.id, e.target.checked)}
+                      style={{ accentColor: 'var(--wine)', width: '16px', height: '16px' }}
+                    />
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Available today</span>
+                  </label>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Settings */}
         {activeTab === 'settings' && (
           <div style={{ maxWidth: '480px' }}>
             <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '20px', padding: '2rem', marginBottom: '1.5rem' }}>
-              <h3 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
-                Daily Cup Limit
-              </h3>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>Daily Cup Limit</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '2rem', marginBottom: '1.5rem' }}>
                 <div>
                   <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Current limit</p>
                   <p className="font-display" style={{ fontSize: '2.5rem', color: 'var(--wine)', fontWeight: 500, lineHeight: 1 }}>{settings.daily_limit}</p>
                 </div>
-                <div style={{ flex: 1 }}>
+                <div>
                   <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Cups sold</p>
                   <p className="font-display" style={{ fontSize: '2.5rem', color: 'var(--text-primary)', fontWeight: 300, lineHeight: 1 }}>{settings.cups_sold}</p>
                 </div>
+                <div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Remaining</p>
+                  <p className="font-display" style={{ fontSize: '2.5rem', color: '#065f46', fontWeight: 300, lineHeight: 1 }}>{Math.max(0, settings.daily_limit - settings.cups_sold)}</p>
+                </div>
               </div>
-
               <div style={{ display: 'flex', gap: '0.75rem' }}>
                 <input
                   type="number"
@@ -352,17 +340,7 @@ export default function AdminPage() {
                 <button
                   onClick={updateDailyLimit}
                   disabled={saving || !newLimit}
-                  style={{
-                    padding: '0.6rem 1.5rem',
-                    background: 'var(--wine)',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '10px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    fontFamily: 'var(--font-body)',
-                    opacity: saving || !newLimit ? 0.5 : 1,
-                  }}
+                  style={{ padding: '0.6rem 1.5rem', background: 'var(--wine)', color: 'white', border: 'none', borderRadius: '10px', fontSize: '0.8rem', cursor: 'pointer', fontFamily: 'inherit', opacity: saving || !newLimit ? 0.5 : 1 }}
                 >
                   {saving ? '...' : 'Update'}
                 </button>
@@ -370,29 +348,15 @@ export default function AdminPage() {
             </div>
 
             <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '20px', padding: '2rem' }}>
-              <h3 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-                Reset Cups Sold (Daily)
-              </h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-                Reset the cups sold counter at the start of each day.
+              <h3 style={{ fontSize: '0.75rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1rem' }}>Reset Cups Sold</h3>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                Run this every morning to reset the daily counter back to zero.
               </p>
               <button
-                onClick={async () => {
-                  setSettings(prev => ({ ...prev, cups_sold: 0 }))
-                  try { await supabase.from('settings').update({ cups_sold: 0 }).eq('id', settings.id) } catch {}
-                }}
-                style={{
-                  padding: '0.7rem 1.5rem',
-                  border: '1px solid var(--border)',
-                  borderRadius: '10px',
-                  background: 'white',
-                  cursor: 'pointer',
-                  fontSize: '0.8rem',
-                  color: 'var(--text-secondary)',
-                  fontFamily: 'var(--font-body)',
-                }}
+                onClick={resetCupsSold}
+                style={{ padding: '0.7rem 1.5rem', border: '1px solid var(--border)', borderRadius: '10px', background: 'white', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--text-secondary)', fontFamily: 'inherit' }}
               >
-                Reset Counter
+                Reset to 0
               </button>
             </div>
           </div>
@@ -423,30 +387,14 @@ function OrderTable({ orders, onStatusChange }: { orders: Order[]; onStatusChang
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
               <span
                 className={`status-${order.status}`}
-                style={{
-                  fontSize: '0.7rem',
-                  padding: '0.3rem 0.8rem',
-                  borderRadius: '100px',
-                  fontWeight: 400,
-                  textTransform: 'capitalize',
-                  letterSpacing: '0.05em',
-                }}
+                style={{ fontSize: '0.7rem', padding: '0.3rem 0.8rem', borderRadius: '100px', fontWeight: 400, textTransform: 'capitalize', letterSpacing: '0.05em' }}
               >
                 {order.status}
               </span>
               <select
                 value={order.status}
                 onChange={e => onStatusChange(order.id, e.target.value as OrderStatus)}
-                style={{
-                  padding: '0.4rem 0.75rem',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  background: 'white',
-                  fontSize: '0.78rem',
-                  color: 'var(--text-primary)',
-                  fontFamily: 'var(--font-body)',
-                  cursor: 'pointer',
-                }}
+                style={{ padding: '0.4rem 0.75rem', border: '1px solid var(--border)', borderRadius: '8px', background: 'white', fontSize: '0.78rem', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: 'pointer' }}
               >
                 {STATUS_OPTIONS.map(s => (
                   <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
