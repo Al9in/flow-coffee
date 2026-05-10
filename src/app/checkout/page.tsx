@@ -34,7 +34,6 @@ export default function CheckoutPage() {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-    // If Supabase not configured, go to demo tracking page
     if (!supabaseUrl || supabaseUrl.includes('placeholder') || !supabaseKey) {
       clearCart()
       router.push(`/track/demo-order-${Date.now()}`)
@@ -42,6 +41,7 @@ export default function CheckoutPage() {
     }
 
     try {
+      // Step 1: Create the order
       const response = await fetch(`${supabaseUrl}/rest/v1/orders`, {
         method: 'POST',
         headers: {
@@ -75,15 +75,28 @@ export default function CheckoutPage() {
       const data = await response.json()
       const orderId = Array.isArray(data) ? data[0]?.id : data?.id
 
-      // Update cups sold
-      await fetch(`${supabaseUrl}/rest/v1/rpc/increment_cups_sold`, {
-        method: 'POST',
+      // Step 2: Get current cups_sold
+      const settingsRes = await fetch(`${supabaseUrl}/rest/v1/settings?select=id,cups_sold`, {
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+        },
+      })
+      const settingsData = await settingsRes.json()
+      const currentSold = settingsData[0]?.cups_sold || 0
+      const settingsId = settingsData[0]?.id
+      const totalOrdered = items.reduce((s, i) => s + i.quantity, 0)
+      const newSold = currentSold + totalOrdered
+
+      // Step 3: Update cups_sold directly
+      await fetch(`${supabaseUrl}/rest/v1/settings?id=eq.${settingsId}`, {
+        method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           'apikey': supabaseKey,
           'Authorization': `Bearer ${supabaseKey}`,
         },
-        body: JSON.stringify({ increment_amount: items.reduce((s, i) => s + i.quantity, 0) }),
+        body: JSON.stringify({ cups_sold: newSold }),
       })
 
       clearCart()
@@ -97,7 +110,7 @@ export default function CheckoutPage() {
     }
   }
 
-  const inputStyle = {
+  const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '0.875rem 1rem',
     border: '1px solid var(--border)',
@@ -105,16 +118,17 @@ export default function CheckoutPage() {
     background: 'white',
     fontSize: '0.9rem',
     color: 'var(--text-primary)',
-    fontFamily: 'var(--font-body)',
+    fontFamily: 'inherit',
     fontWeight: 300,
     transition: 'border-color 0.2s ease',
+    boxSizing: 'border-box',
   }
 
-  const labelStyle = {
+  const labelStyle: React.CSSProperties = {
     display: 'block',
     fontSize: '0.7rem',
     letterSpacing: '0.15em',
-    textTransform: 'uppercase' as const,
+    textTransform: 'uppercase',
     color: 'var(--text-muted)',
     marginBottom: '0.5rem',
     fontWeight: 400,
@@ -124,9 +138,13 @@ export default function CheckoutPage() {
     return (
       <main style={{ background: 'var(--cream)', minHeight: '100vh' }}>
         <Nav />
-        <div style={{ paddingTop: '140px', textAlign: 'center', padding: '140px 2rem 2rem' }}>
-          <h1 className="font-display" style={{ fontSize: '2rem', marginBottom: '1rem' }}>Your cart is empty</h1>
-          <a href="/order" style={{ color: 'var(--wine)', textDecoration: 'none', fontSize: '0.9rem' }}>← Back to menu</a>
+        <div style={{ textAlign: 'center', padding: '140px 2rem 2rem' }}>
+          <h1 className="font-display" style={{ fontSize: '2rem', marginBottom: '1rem' }}>
+            Your cart is empty
+          </h1>
+          <a href="/order" style={{ color: 'var(--wine)', textDecoration: 'none', fontSize: '0.9rem' }}>
+            ← Back to menu
+          </a>
         </div>
       </main>
     )
@@ -136,9 +154,17 @@ export default function CheckoutPage() {
     <main style={{ background: 'var(--cream)', minHeight: '100vh' }}>
       <Nav />
 
-      <div style={{ paddingTop: '100px', maxWidth: '900px', margin: '0 auto', padding: '100px 2rem 80px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 380px)', gap: '3rem', alignItems: 'start' }}>
-
-        {/* Left: Form */}
+      <div
+        style={{
+          maxWidth: '900px',
+          margin: '0 auto',
+          padding: '100px 2rem 80px',
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 360px)',
+          gap: '3rem',
+          alignItems: 'start',
+        }}
+      >
         <div>
           <p style={{ fontSize: '0.65rem', letterSpacing: '0.25em', textTransform: 'uppercase', color: 'var(--wine)', marginBottom: '0.75rem' }}>
             Reserve
@@ -148,12 +174,10 @@ export default function CheckoutPage() {
           </h1>
 
           <form onSubmit={handleSubmit}>
-            {/* Customer details */}
             <div style={{ marginBottom: '2.5rem' }}>
-              <p style={{ fontSize: '0.7rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.25rem', fontWeight: 400 }}>
+              <p style={{ fontSize: '0.7rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
                 Your Details
               </p>
-
               <div style={{ display: 'grid', gap: '1rem' }}>
                 <div>
                   <label style={labelStyle}>Full Name *</label>
@@ -166,7 +190,6 @@ export default function CheckoutPage() {
                     style={inputStyle}
                   />
                 </div>
-
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                   <div>
                     <label style={labelStyle}>Phone *</label>
@@ -191,7 +214,6 @@ export default function CheckoutPage() {
                     />
                   </div>
                 </div>
-
                 <div>
                   <label style={labelStyle}>Pickup Time *</label>
                   <input
@@ -202,7 +224,6 @@ export default function CheckoutPage() {
                     style={inputStyle}
                   />
                 </div>
-
                 <div>
                   <label style={labelStyle}>Notes (Optional)</label>
                   <textarea
@@ -216,12 +237,10 @@ export default function CheckoutPage() {
               </div>
             </div>
 
-            {/* Payment */}
             <div style={{ marginBottom: '2.5rem' }}>
-              <p style={{ fontSize: '0.7rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.25rem', fontWeight: 400 }}>
+              <p style={{ fontSize: '0.7rem', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
                 Payment Method
               </p>
-
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
                 {[
                   { id: 'card' as const, label: 'Card', icon: <CreditCard size={18} /> },
@@ -242,8 +261,7 @@ export default function CheckoutPage() {
                       cursor: 'pointer',
                       color: paymentMethod === method.id ? 'var(--wine)' : 'var(--text-secondary)',
                       fontSize: '0.85rem',
-                      fontWeight: 400,
-                      fontFamily: 'var(--font-body)',
+                      fontFamily: 'inherit',
                       transition: 'all 0.2s ease',
                     }}
                   >
@@ -252,28 +270,9 @@ export default function CheckoutPage() {
                   </button>
                 ))}
               </div>
-
-              {paymentMethod === 'card' && (
-                <div style={{ display: 'grid', gap: '1rem' }}>
-                  <div>
-                    <label style={labelStyle}>Card Number</label>
-                    <input type="text" placeholder="4242 4242 4242 4242" style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} disabled />
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                    <div>
-                      <label style={labelStyle}>Expiry</label>
-                      <input type="text" placeholder="MM / YY" style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} disabled />
-                    </div>
-                    <div>
-                      <label style={labelStyle}>CVC</label>
-                      <input type="text" placeholder="•••" style={{ ...inputStyle, opacity: 0.6, cursor: 'not-allowed' }} disabled />
-                    </div>
-                  </div>
-                  <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-                    🔒 Stripe integration — connect your Stripe keys to enable payments
-                  </p>
-                </div>
-              )}
+              <div style={{ padding: '1rem', background: 'var(--parchment)', borderRadius: '12px', fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
+                🔒 Payment collected at pickup for now
+              </div>
             </div>
 
             {error && (
@@ -299,55 +298,35 @@ export default function CheckoutPage() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '0.75rem',
-                fontFamily: 'var(--font-body)',
+                fontFamily: 'inherit',
                 transition: 'all 0.2s ease',
               }}
             >
-              {loading ? 'Processing...' : `Place Order · ${total} AED`}
+              {loading ? 'Placing order...' : `Place Order · ${total} AED`}
               {!loading && <ArrowRight size={16} />}
             </button>
           </form>
         </div>
 
-        {/* Right: Order summary */}
-        <div
-          style={{
-            background: 'white',
-            border: '1px solid var(--border)',
-            borderRadius: '20px',
-            padding: '2rem',
-            position: 'sticky',
-            top: '100px',
-          }}
-        >
+        <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: '20px', padding: '2rem', position: 'sticky', top: '100px' }}>
           <p style={{ fontSize: '0.65rem', letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
             Order Summary
           </p>
-
           {items.map(item => (
             <div key={item.product.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 0', borderBottom: '1px solid var(--border)' }}>
               <div>
                 <p style={{ fontSize: '0.88rem' }}>{item.product.name}</p>
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>× {item.quantity}</p>
               </div>
-              <p style={{ fontSize: '0.9rem', fontWeight: 400 }}>{item.product.price * item.quantity} AED</p>
+              <p style={{ fontSize: '0.9rem' }}>{item.product.price * item.quantity} AED</p>
             </div>
           ))}
-
           <div style={{ paddingTop: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Total</span>
             <span className="font-display" style={{ fontSize: '1.4rem', fontWeight: 500 }}>{total} AED</span>
           </div>
         </div>
       </div>
-
-      <style jsx global>{`
-        @media (max-width: 700px) {
-          main > div {
-            grid-template-columns: 1fr !important;
-          }
-        }
-      `}</style>
     </main>
   )
 }
